@@ -5,6 +5,7 @@ use ansi_term::{
     Style,
 };
 use chrono::Datelike;
+use unicode_width::UnicodeWidthStr;
 
 const REFORM_YEAR: u32 = 1099;
 
@@ -74,30 +75,52 @@ fn get_days_accumulated_by_month(year: u32) -> (Vec<u32>, Vec<u32>) {
     (accum, days)
 }
 
-fn first_day_printable(day_year: u32, starting_day: u32) -> String {
+fn first_day_printable(
+    day_year: u32,
+    starting_day: u32,
+    weekday_name_widths: Vec<usize>,
+) -> String {
+    // Space padding before first day of first week
     let mut printable = format!("");
-
+    let max_width: usize = weekday_name_widths.iter().sum::<usize>() + 6;
+    let last_weekday_name_width = weekday_name_widths.last().unwrap();
     if (day_year - starting_day) % WEEKDAYS == 0 {
-        printable.push_str("                  ");
+        printable.push_str(&" ".repeat(max_width - last_weekday_name_width));
     }
     for i in 2..WEEKDAYS {
         if (day_year - starting_day) % WEEKDAYS == i {
-            printable.push_str(&"   ".repeat(i as usize - 1));
+            let width = &weekday_name_widths[0..i as usize].iter().sum::<usize>() + i as usize
+                - 1
+                - last_weekday_name_width;
+            printable.push_str(&" ".repeat(width));
             break;
         }
     }
     printable
 }
 
-fn remain_day_printable(day: u32, day_year: u32, starting_day: u32) -> String {
+fn remain_day_printable(
+    day: u32,
+    day_year: u32,
+    starting_day: u32,
+    weekday_name_widths: Vec<usize>,
+) -> String {
     let base = if ((day_year - starting_day) % WEEKDAYS) == 0 {
-        format!("{:3}{}", day, TOKEN)
+        let first_weekday_name_width = weekday_name_widths.first().unwrap();
+        let spacing = 1 + first_weekday_name_width;
+        format!("{:spacing$}{}", day, TOKEN)
     } else {
         String::default()
     };
 
     let complement = (1..WEEKDAYS)
-        .find_map(|i| ((day_year - starting_day) % WEEKDAYS == i).then(|| format!("{:3}", day)))
+        .find_map(|i| {
+            ((day_year - starting_day) % WEEKDAYS == i).then(|| {
+                let weekday_name_width = weekday_name_widths[i as usize];
+                let spacing = 1 + weekday_name_width;
+                format!("{:spacing$}", day)
+            })
+        })
         .unwrap_or_default();
 
     format!("{}{}", base, complement)
@@ -111,6 +134,7 @@ fn body_printable(
     year_memoized: u32,
     starting_day: u32,
     week_numbers: bool,
+    weekday_name_widths: Vec<usize>,
 ) -> Vec<String> {
     let mut result = Vec::<String>::new();
     let mut result_days = format!("");
@@ -119,10 +143,19 @@ fn body_printable(
     (1..days + 1).for_each(|day| {
         if day == 1 {
             let first_day = days_by_date(1, month, year, months_memoized.clone(), year_memoized);
-            result_days.push_str(&first_day_printable(first_day, starting_day))
+            result_days.push_str(&first_day_printable(
+                first_day,
+                starting_day,
+                weekday_name_widths.clone(),
+            ))
         }
         let day_year = days_by_date(day, month, year, months_memoized.clone(), year_memoized);
-        result_days.push_str(&remain_day_printable(day, day_year, starting_day))
+        result_days.push_str(&remain_day_printable(
+            day,
+            day_year,
+            starting_day,
+            weekday_name_widths.clone(),
+        ))
     });
 
     // lines splitted by '\n' TOKEN
@@ -133,8 +166,8 @@ fn body_printable(
         .for_each(|i| result.push(i.to_string()));
 
     for line in 0..result.len() {
-        let spaces =
-            21 - result[line].len() + (3 * (result[line].is_empty() && week_numbers) as usize);
+        let spaces = weekday_name_widths.iter().sum::<usize>() + 7 - result[line].len()
+            + (3 * (result[line].is_empty() && week_numbers) as usize);
         result[line] += &" ".repeat(spaces);
     }
     // all bodies should have at least 7 lines
@@ -152,10 +185,17 @@ fn month_printable(
     year_memoized: u32,
     starting_day: u32,
     month_names: Vec<String>,
-    week_names: Vec<String>,
+    weekday_names: Vec<String>,
     week_numbers: bool,
 ) -> Vec<String> {
     let mut result = Vec::<String>::new();
+    let (header, weekday_name_widths) =
+        circular_weekday_names_and_widths(weekday_names, starting_day as usize);
+    let month_name = &month_names[month - 1];
+    let max_width = header.trim().width() + 1;
+    result.push(format!("{:^max_width$}", month_name));
+    result.push(header);
+
     let body = body_printable(
         year,
         month,
@@ -164,25 +204,32 @@ fn month_printable(
         year_memoized,
         starting_day,
         week_numbers,
+        weekday_name_widths,
     );
-    let month_name = &month_names[month - 1];
-    result.push(format!(" {:^20}", month_name));
-    let header = circular_week_name(week_names, starting_day as usize);
-    result.push(header);
-
     body.into_iter().for_each(|item| {
         result.push(item);
     });
     result
 }
 
-fn circular_week_name(week_name: Vec<String>, idx: usize) -> String {
+fn circular_weekday_names_and_widths(
+    weekday_names: Vec<String>,
+    idx: usize,
+) -> (String, Vec<usize>) {
     let mut s = " ".to_string();
+    let circular_weekday_names: Vec<String> = (idx..(ROW_SIZE + idx))
+        .map(|i| weekday_names[i % ROW_SIZE].clone())
+        .collect();
+    let weekday_name_widths: Vec<usize> = circular_weekday_names
+        .into_iter()
+        .map(|s| s.width())
+        .collect();
+
     for i in idx..(ROW_SIZE - 1 + idx) {
-        s.push_str(&format!("{} ", week_name[i % ROW_SIZE]));
+        s.push_str(&format!("{} ", weekday_names[i % ROW_SIZE]));
     }
-    s.push_str(week_name[(ROW_SIZE - 1 + idx) % ROW_SIZE].as_str());
-    s.to_string()
+    s.push_str(weekday_names[(ROW_SIZE - 1 + idx) % ROW_SIZE].as_str());
+    (s.to_string(), weekday_name_widths)
 }
 
 pub fn calendar(
@@ -200,6 +247,18 @@ pub fn calendar(
     let locale_info = locale::LocaleInfo::new(locale_str);
 
     (1..MONTHS + 1).for_each(|month| {
+        let locale_weekday_names: Vec<String> = locale_info
+            .week_day_names()
+            .into_iter()
+            .map(|s| {
+                let day_name = s.trim().to_string();
+                if day_name.width() < 2 {
+                    format!("{} ", day_name)
+                } else {
+                    day_name
+                }
+            })
+            .collect();
         rows[row_counter][column_counter] = month_printable(
             year,
             month,
@@ -208,7 +267,7 @@ pub fn calendar(
             year_memoized,
             starting_day,
             locale_info.month_names(),
-            locale_info.week_day_names(),
+            locale_weekday_names,
             week_numbers,
         );
 
@@ -384,34 +443,69 @@ pub fn display(
 fn test_circular_week_name() {
     let locale_str = "en_US";
     let locale_info = locale::LocaleInfo::new(locale_str);
-    let week_name = locale_info.week_day_names();
+    let weekday_names = locale_info.week_day_names();
     assert_eq!(
-        circular_week_name(week_name.clone(), 0),
-        " Su Mo Tu We Th Fr Sa"
+        circular_weekday_names_and_widths(weekday_names.clone(), 0),
+        (
+            " Su Mo Tu We Th Fr Sa".to_string(),
+            vec![
+                2 as usize, 2 as usize, 2 as usize, 2 as usize, 2 as usize, 2 as usize, 2 as usize
+            ]
+        )
     );
     assert_eq!(
-        circular_week_name(week_name.clone(), 1),
-        " Mo Tu We Th Fr Sa Su"
+        circular_weekday_names_and_widths(weekday_names.clone(), 1),
+        (
+            " Mo Tu We Th Fr Sa Su".to_string(),
+            vec![
+                2 as usize, 2 as usize, 2 as usize, 2 as usize, 2 as usize, 2 as usize, 2 as usize
+            ]
+        )
     );
     assert_eq!(
-        circular_week_name(week_name.clone(), 2),
-        " Tu We Th Fr Sa Su Mo"
+        circular_weekday_names_and_widths(weekday_names.clone(), 2),
+        (
+            " Tu We Th Fr Sa Su Mo".to_string(),
+            vec![
+                2 as usize, 2 as usize, 2 as usize, 2 as usize, 2 as usize, 2 as usize, 2 as usize
+            ]
+        )
     );
     assert_eq!(
-        circular_week_name(week_name.clone(), 3),
-        " We Th Fr Sa Su Mo Tu"
+        circular_weekday_names_and_widths(weekday_names.clone(), 3),
+        (
+            " We Th Fr Sa Su Mo Tu".to_string(),
+            vec![
+                2 as usize, 2 as usize, 2 as usize, 2 as usize, 2 as usize, 2 as usize, 2 as usize
+            ]
+        )
     );
     assert_eq!(
-        circular_week_name(week_name.clone(), 4),
-        " Th Fr Sa Su Mo Tu We"
+        circular_weekday_names_and_widths(weekday_names.clone(), 4),
+        (
+            " Th Fr Sa Su Mo Tu We".to_string(),
+            vec![
+                2 as usize, 2 as usize, 2 as usize, 2 as usize, 2 as usize, 2 as usize, 2 as usize
+            ]
+        )
     );
     assert_eq!(
-        circular_week_name(week_name.clone(), 5),
-        " Fr Sa Su Mo Tu We Th"
+        circular_weekday_names_and_widths(weekday_names.clone(), 5),
+        (
+            " Fr Sa Su Mo Tu We Th".to_string(),
+            vec![
+                2 as usize, 2 as usize, 2 as usize, 2 as usize, 2 as usize, 2 as usize, 2 as usize
+            ]
+        )
     );
     assert_eq!(
-        circular_week_name(week_name.clone(), 6),
-        " Sa Su Mo Tu We Th Fr"
+        circular_weekday_names_and_widths(weekday_names.clone(), 6),
+        (
+            " Sa Su Mo Tu We Th Fr".to_string(),
+            vec![
+                2 as usize, 2 as usize, 2 as usize, 2 as usize, 2 as usize, 2 as usize, 2 as usize
+            ]
+        )
     );
 }
 
@@ -420,7 +514,15 @@ fn test_circular_week_name_pt_br() {
     let locale_str = "pt_BR";
     let locale_info = locale::LocaleInfo::new(locale_str);
     let week_name = locale_info.week_day_names();
-    assert_eq!(circular_week_name(week_name, 0), " Do Se Te Qu Qu Se Sá");
+    assert_eq!(
+        circular_weekday_names_and_widths(week_name, 0),
+        (
+            " Do Se Te Qu Qu Se Sá".to_string(),
+            vec![
+                2 as usize, 2 as usize, 2 as usize, 2 as usize, 2 as usize, 2 as usize, 2 as usize
+            ]
+        )
+    );
 }
 
 #[test]

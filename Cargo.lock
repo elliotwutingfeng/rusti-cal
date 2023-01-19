@@ -357,6 +357,7 @@ dependencies = [
  "chrono",
  "locale_config",
  "pure-rust-locales",
+ "unicode-width",
 ]
 
 [[package]]
